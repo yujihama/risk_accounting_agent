@@ -23,7 +23,7 @@ class CompanyInput(BaseModel):
     company_name: str
     summary: str  # 例: "主力事業は電子部品の製造・販売"
     key_metrics: Dict[str, str] # 例: {"売上高": "100億円", "営業利益": "10億円"}
-    abnormal_indicators: Dict[str, str] # 例: {"在庫回転期間": "前年比50%悪化"}
+    abnormal_indicators: Dict[str, Any] # 例: {"在庫回転期間": "前年比50%悪化"}
 
 class RiskCandidate(BaseModel):
     id: str = Field(default_factory=lambda: f"RC_{uuid.uuid4().hex[:4]}")
