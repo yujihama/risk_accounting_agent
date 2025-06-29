@@ -38,9 +38,9 @@ class SearchQueries(BaseModel):
 
 class RiskAssessment(BaseModel):
     certainty: str
-    reasoning: str
     is_conclusive: bool
     next_question: Optional[str] = None
+    reasoning: str
 
 class FinalAssessment(BaseModel):
     company_id: str
@@ -80,74 +80,73 @@ class GraphState(BaseModel):
 # --- 2. プロンプト: 各エージェントの思考を定義 ---
 PROMPT_TEMPLATE_INITIAL_SUMMARY = """
 あなたはシニア財務アナリストです。
-以下は、とある子会社の概要と財務指標です。この情報全体を俯瞰し、最も優先的に調査すべきリスクの概要を日本語で整理してください。
+以下はとある子会社の概要と検出された異常な指標の推移です。この情報全体を俯瞰し、この異常な指標の推移の背景を推測して仮説を立ててください。
 この結果は後続の調査作業のインプットとなります。
 
 ## 会社概要
 社名: {company_name}
 事業概要: {summary}
 
-## 主要財務指標
-{key_metrics}
-
 ## 検出された異常指標
 {abnormal_indicators}
 """
 
 PROMPT_TEMPLATE_CANDIDATE_GENERATOR = """
-あなたは優秀なリスクアナリストです。
-以下の財務指標の異常値から、想定される事業上のリスク候補を具体的に3つ程度挙げてください。
+あなたは優秀な財務アナリストです。
+以下の異常な指標の推移と背景の仮説から、この仮説を検証するための調査観点を3～5つ程度挙げてください。
 
-## 異常指標
-{metrics_summary}
+## 異常な指標の推移
+{abnormal_indicators}
+
+## 推測される背景
+{background}
 """
 
 PROMPT_TEMPLATE_QUERY_DECOMPOSER = """
 あなたは熟練した財務分析の専門家です。
-以下のリスクシナリオの文章を分析し、その内容を検証するためにRAG検索で使うためのキーフレーズを3つ程度抽出してください。
+以下の調査観点の文章を分析し、その内容を検証するためにRAG検索で使うためのキーフレーズを3つ程度抽出してください。
 各キーフレーズはそれぞれ単独で意味として独立するようにください。
 生成されたキーフレーズはベクトル化され類似度が高いチャンクが取得されます。有効に取得できるよう、キーフレーズは省略せずに具体的に生成してください。
 
-## 分析対象の文章
+## 調査観点の文章
 {candidate_description}
+
 """
 
 PROMPT_TEMPLATE_EVALUATOR_DEEP_DIVE = """
 あなたは熟練した財務分析の専門家です。
-以下のリスク候補について、集められた証跡情報を基に、現時点での評価を行ってください。
-証跡情報には、[定性情報]として議事録やレポートの抜粋と、[定量情報]として具体的な財務指標が含まれています。
-これらを必ず突き合わせて、多角的に評価してください。
+以下の調査観点について、集められた証跡情報を基に多角的な評価を行い、ストーリーを推察してください。
 
-## 評価対象のリスク候補
+## 評価対象の調査観点
 {candidate_description}
 
 ## これまでに集まった証跡情報
 {evidence}
 
 ### あなたのタスク
-1.  現在の情報だけで、リスクの確度（high・middle・low）を判断してください。
-2.  この評価で結論が出たと判断できるか（`is_conclusive`）を判定してください。懐疑的な目線で判断してください。
-3.  まだ結論が出ていない場合、次は何を調べればより確実な結論を導けるか、具体的な質問（`next_question`）を考えてください。
-4.  上記の回答をするに至った思考過程を整理して次のアクションを説明してください。(`reasoning`)
+以下のフォーマットで回答してください。
+`certainty`: 現在の情報だけで、調査結果の確度（high・middle・low）を判断してください。
+`is_conclusive`: この評価で結論が出たと判断できるかを判定してください。懐疑的な目線で判断してください。
+`next_question`: まだ結論が出ていない場合、次は何を調べればより確実な結論を導けるか、具体的な質問を考えてください。
+`reasoning`: 上記の回答をするに至った思考過程を整理して説明してください。どのsourceからどのような根拠でその結論に至ったかを明記してください。
 """
 
 PROMPT_TEMPLATE_COMPANY_REPORT = """
-あなたはCFOに報告を行う経理財務の専門家、監査人です。
-以下は子会社について調査したリスク評価の最終結果です。
-
-この調査結果全体を要約し、経営層が意思決定に使えるように、簡潔かつ示唆に富んだ最終報告書を作成してください。
+あなたは経理財務分析の専門家です。
+以下は子会社について調査した結果です。
+検知された指標推移の背景や因果関係を分析しレポートを作成してください。
+レポートは、指標推移の概況、調査の結果判明した指標推移の背景や因果関係で構成されるようにしてください。
+また情報ソースは注釈を付ける形で記載してください。
 
 ## 分析対象企業
 {company_name} ({company_id})
 
-## 調査されたリスク評価一覧
+## 検知された指標推移
+{abnormal_indicators}
+
+## 指標推移の背景、ストーリーの調査結果
 {assessments_summary}
 
-### あなたのタスク
-- 調査結果の要点をまとめる。
-- 最も注意すべき重大なリスクを特定する。
-- 経営層が取るべき次のアクションについて、具体的な提言を行う。
-- 全体をプロフェッショナルな報告書の形式で出力する。
 """
 
 # --- 3. ノードの実装 ---
@@ -155,7 +154,10 @@ PROMPT_TEMPLATE_COMPANY_REPORT = """
 if "OPENAI_API_KEY" not in os.environ:
     os.environ["OPENAI_API_KEY"] = "YOUR_API_KEY_HERE"
 
-llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.0)
+llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+# eval_llm = ChatOpenAI(model="o3-mini", temperature=1)
+eval_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+
 embeddings = OpenAIEmbeddings()
 
 # すべてのprintをGraphState.logにも蓄積するヘルパ
@@ -191,53 +193,6 @@ def load_initial_data_node(state: GraphState) -> Dict[str, Any]:
     """全社共通の定性情報をロードするノード"""
     log_and_print(state, "--- ノード実行: ドキュメントのロード ---")
     
-    # # 1. 既存のスタティックデータ
-    # common_docs = [
-    #     # --- 既存データ ---
-    #     Document(page_content="経営会議議事録 2025/05/15: 製品Xの市場からのフィードバックが芳しくないとの報告があった。特に若年層からの支持が得られていない。", metadata={"source": "経営会議議事録", "date": "2025-05-15"}),
-    #     Document(page_content="取締役会議事録 2025/06/10: 競合B社の新製品が好調で、製品Xのシェアを奪っている。価格戦略の見直しが急務である。", metadata={"source": "取締役会議事録", "date": "2025-06-10"}),
-    #     Document(page_content="品質会議議事録 2025/04/20: 製品Xの初期ロットにおいて、部品Aの軽微な不具合が報告されたが、安全性に問題はないと判断された。", metadata={"source": "品質会議議事録", "date": "2025-04-20"}),
-    #     Document(page_content="週次営業報告 2025/06/20: 主要な販売代理店からの製品Xの発注が停止している。理由は競合製品への乗り換えと聞いている。", metadata={"source": "週次営業報告", "date": "2025-06-20"}),
-
-    #     # --- 追加データ (製品・販売) ---
-    #     Document(page_content="製品X販売促進レポート 2025/03/31: 春のキャンペーンの売上効果は限定的で、目標の60%に留まった。", metadata={"source": "販売促進レポート", "date": "2025-03-31"}),
-    #     Document(page_content="顧客サポートセンター月次レポート 2025/05/31: 製品Xに関する問い合わせのうち、30%が操作性の複雑さに関するものだった。", metadata={"source": "顧客サポートレポート", "date": "2025-05-31"}),
-    #     Document(page_content="SNS分析レポート 2025/06/05: インフルエンサーマーケティング施策後、製品Xの認知度は向上したが、購買意欲の向上には繋がっていない。", metadata={"source": "SNS分析レポート", "date": "2025-06-05"}),
-    #     Document(page_content="ECサイトA/Bテスト結果 2025/04/10: 製品ページのレイアウト変更によるコンバージョン率の改善は見られなかった。", metadata={"source": "A/Bテスト結果", "date": "2025-04-10"}),
-    #     Document(page_content="エリア別売上報告（関西） 2025/05/25: 関西エリアでの製品Xの売上が前月比15%減。競合B社の攻勢が強い。", metadata={"source": "エリア別売上報告", "date": "2025-05-25"}),
-
-    #     # --- 追加データ (競合・市場) ---
-    #     Document(page_content="競合分析レポート 2025/02/15: 競合C社が新技術に関する特許を出願。3年以内に市場に影響を与える可能性がある。", metadata={"source": "競合分析レポート", "date": "2025-02-15"}),
-    #     Document(page_content="市場調査レポート 2025/01/20: 当社のターゲット市場は、サステナビリティへの関心が高まっているが、製品Xは環境配慮のアピールが弱い。", metadata={"source": "市場調査レポート", "date": "2025-01-20"}),
-    #     Document(page_content="外部ニュース 2025/06/15: 新興企業D社が、低価格な類似製品でクラウドファンディングに成功。新たな脅威となる可能性がある。", metadata={"source": "外部ニュース", "date": "2025-06-15"}),
-
-    #     # --- 追加データ (サプライチェーン・製造) ---
-    #     Document(page_content="調達部門レポート 2025/03/05: 主要部品Aの供給元であるE国で政情不安が高まっており、供給遅延のリスクがある。", metadata={"source": "調達部門レポート", "date": "2025-03-05"}),
-    #     Document(page_content="工場稼働状況報告 2025/04/30: 製造ライン2で頻発する軽微なトラブルにより、生産効率が計画値を5%下回っている。", metadata={"source": "工場稼働状況報告", "date": "2025-04-30"}),
-    #     Document(page_content="物流パートナー評価 2025/05/10: 物流委託先F社の配送遅延率が上昇傾向。顧客満足度低下の一因となっている可能性がある。", metadata={"source": "物流パートナー評価", "date": "2025-05-10"}),
-    #     Document(page_content="原材料市況レポート 2025/06/01: 製品Xの主要な原材料であるGの価格が、天候不順により3ヶ月で20%高騰している。", metadata={"source": "原材料市況レポート", "date": "2025-06-01"}),
-
-    #     # --- 追加データ (人事・組織) ---
-    #     Document(page_content="人事異動通知 2025/02/01: 製品X開発チームのリーダーである田中氏が、一身上の都合により退職。", metadata={"source": "人事異動通知", "date": "2025-02-01"}),
-    #     Document(page_content="従業員満足度調査 2025/03/20: 開発部門のワークライフバランスに対する満足度が全社平均を大きく下回っている。", metadata={"source": "従業員満足度調査", "date": "2025-03-20"}),
-    #     Document(page_content="社内通達 2025/05/20: 業績不振のため、全社的に経費削減を強化する。特に広告宣伝費は前年比30%削減を目標とする。", metadata={"source": "社内通達", "date": "2025-05-20"}),
-
-    #     # --- 追加データ (財務・法務) ---
-    #     Document(page_content="四半期財務予測（修正） 2025/04/05: 第2四半期の売上予測を、製品Xの販売不振を理由に当初計画の85%に下方修正する。", metadata={"source": "四半期財務予測", "date": "2025-04-05"}),
-    #     Document(page_content="法務部門からの警告 2025/05/08: 製品Xの広告表現について、景品表示法に抵触する恐れがあるとの指摘あり。直ちに修正が必要。", metadata={"source": "法務部門からの警告", "date": "2025-05-08"}),
-    #     Document(page_content="内部監査報告 2025/06/18: 一部の経費申請において、承認プロセスが遵守されていない事例が散見された。", metadata={"source": "内部監査報告", "date": "2025-06-18"}),
-    #     Document(page_content="資金調達会議議事録 2025/03/12: 新規プロジェクトのための追加融資について、銀行側は製品Xの将来性を懸念しており、回答を保留。", metadata={"source": "資金調達会議議事録", "date": "2025-03-12"}),
-
-    #     # --- 追加データ (その他) ---
-    #     Document(page_content="ITシステム障害報告 2025/04/22: 基幹システムが半日にわたり停止。受注処理に大幅な遅れが発生した。", metadata={"source": "ITシステム障害報告", "date": "2025-04-22"}),
-    #     Document(page_content="プレスリリース 2024/12/15: 製品Xが「グッドデザイン賞2024」を受賞しました。", metadata={"source": "プレスリリース", "date": "2024-12-15"}),
-    #     Document(page_content="株主総会質疑応答 2025/06/20: 株主から、製品Xの競争力の低下について厳しい質問があった。", metadata={"source": "株主総会質疑応答", "date": "2025-06-20"}),
-    #     Document(page_content="コンサルティングレポート要約 2025/01/30: 市場のデジタルシフトが加速しており、当社のオンライン販売チャネルの強化が不可欠である。", metadata={"source": "コンサルティングレポート", "date": "2025-01-30"}),
-    #     Document(page_content="特許侵害の可能性に関する通知 2025/06/05: 競合A社より、製品Xが自社特許を侵害している可能性があるとの警告書を受領。", metadata={"source": "外部通知", "date": "2025-06-05"}),
-    #     Document(page_content="為替レート変動に関するメモ 2025/05/30: 急激な円安により、海外からの部品調達コストが15%増加している。", metadata={"source": "財務メモ", "date": "2025-05-30"}),
-    # ]
-
-    # 2. ユーザーが指定したフォルダ配下の PDF を読み込み
     common_docs = []
     if state.docs_folder_path and os.path.isdir(state.docs_folder_path):
         pdf_files = [
@@ -264,8 +219,8 @@ def load_initial_data_node(state: GraphState) -> Dict[str, Any]:
                     from langchain.text_splitter import RecursiveCharacterTextSplitter
                     
                     text_splitter = RecursiveCharacterTextSplitter(
-                        chunk_size=200,
-                        chunk_overlap=50,
+                        chunk_size=500,
+                        chunk_overlap=100,
                         length_function=len,
                         separators=["\n\n", "\n", "。", "、", " ", ""]
                     )
@@ -323,11 +278,10 @@ def setup_company_analysis_node(state: GraphState) -> Dict[str, Any]:
 
     # 分析サマリーを生成
     summary_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_INITIAL_SUMMARY)
-    summary_chain = summary_prompt | llm
+    summary_chain = summary_prompt | eval_llm
     analysis_summary = summary_chain.invoke({
         "company_name": company_input.company_name,
         "summary": company_input.summary,
-        "key_metrics": json.dumps(company_input.key_metrics, ensure_ascii=False),
         "abnormal_indicators": json.dumps(company_input.abnormal_indicators, ensure_ascii=False)
     }).content
     
@@ -342,14 +296,14 @@ def setup_company_analysis_node(state: GraphState) -> Dict[str, Any]:
     }
 
 def generate_candidates_node(state: GraphState) -> Dict[str, Any]:
-    """分析サマリーからリスク候補を生成"""
-    log_and_print(state, "--- ノード実行: リスク候補の生成 ---")
+    """分析サマリーから調査観点を生成"""
+    log_and_print(state, "--- ノード実行: 調査観点の生成 ---")
     structured_llm_cand = llm.with_structured_output(RiskCandidates)
     prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_CANDIDATE_GENERATOR)
     chain = prompt | structured_llm_cand
     # Change 'summary' to 'metrics_summary' to match the prompt template
-    response = chain.invoke({"metrics_summary": state.current_analysis_summary})
-    log_and_print(state, "リスク分析の観点を生成しました。")
+    response = chain.invoke({"abnormal_indicators": json.dumps(state.current_company_input.abnormal_indicators, ensure_ascii=False), "background": state.current_analysis_summary})
+    log_and_print(state, "調査観点を生成しました。")
     for cand in response.candidates:
         cand.source_metric = state.current_analysis_summary
         log_and_print(state, f"観点: {cand.description}")
@@ -363,7 +317,7 @@ def generate_candidates_node(state: GraphState) -> Dict[str, Any]:
 def start_investigation_node(state: GraphState) -> Dict[str, Any]:
     candidate_index = state.current_candidate_index_micro
     candidate = state.risk_candidates[candidate_index]
-    log_and_print(state, f"--- ノード実行: [{state.current_company_input.company_name}] のリスク調査開始 ---")
+    log_and_print(state, f"--- ノード実行: [{state.current_company_input.company_name}] の調査開始 ---")
     log_and_print(state, f"調査対象: ({candidate.id}) {candidate.description}")
     # log_and_print(state, f"観点({candidate.id})の調査を開始。")
     return {
@@ -422,9 +376,9 @@ def rag_search_node(state: GraphState) -> Dict[str, Any]:
 def evaluate_and_decide_node(state: GraphState) -> Dict[str, Any]:
     log_and_print(state, "--- ノード実行: 評価 ---")
     candidate = state.risk_candidates[state.current_candidate_index_micro]
-    evidence_text = "\n\n".join([doc.page_content for doc in state.gathered_evidence])
+    evidence_text = "\n\n".join([f"[source: {doc.metadata['source']}] {doc.page_content}" for doc in state.gathered_evidence])
 
-    structured_llm_eval = llm.with_structured_output(RiskAssessment)
+    structured_llm_eval = eval_llm.with_structured_output(RiskAssessment)
     prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_EVALUATOR_DEEP_DIVE)
     chain = prompt | structured_llm_eval
     
@@ -451,7 +405,7 @@ def finalize_assessment_node(state: GraphState) -> Dict[str, Any]:
         candidate_id=candidate.id,
         certainty=last_assessment.certainty,
         reasoning=last_assessment.reasoning,
-        evidence_docs=list(set([doc.page_content for doc in state.gathered_evidence]))
+        evidence_docs=list(set([f"[source: {doc.metadata['source']}] {doc.page_content}" for doc in state.gathered_evidence]))
     )
     
     return {
@@ -473,28 +427,21 @@ def generate_company_report_node(state: GraphState) -> Dict[str, Any]:
     # LLMに渡すために評価結果を整形
     assessments_summary_text = ""
     for i, assessment in enumerate(company_assessments, 1):
-        assessments_summary_text += f"\n--- リスク評価 {i} ---\n"
+        assessments_summary_text += f"\n--- 調査結果 {i} ---\n"
         assessments_summary_text += f"ID: {assessment.candidate_id}\n"
-        assessments_summary_text += f"確度: {assessment.certainty}\n"
         assessments_summary_text += f"判断理由: {assessment.reasoning}\n"
         assessments_summary_text += f"根拠資料: {assessment.evidence_docs}\n"
 
     # レポート生成の実行
     report_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_COMPANY_REPORT)
-    report_chain = report_prompt | llm
+    report_chain = report_prompt | eval_llm
     
     report_content = report_chain.invoke({
         "company_name": company_input.company_name,
         "company_id": company_input.company_id,
-        "assessments_summary": assessments_summary_text
+        "assessments_summary": assessments_summary_text,
+        "abnormal_indicators": json.dumps(company_input.abnormal_indicators, ensure_ascii=False)
     }).content
-
-    # 生成されたレポートをコンソールに表示し、状態に保存
-    # header_line = "\n" + "="*20 + f" [{company_input.company_name}] 最終レポート " + "="*20
-    # footer_line = "="*60 + "\n"
-    # log_and_print(state, header_line)
-    # log_and_print(state, report_content)
-    # log_and_print(state, footer_line)
 
     updated_reports = state.company_reports.copy()
     updated_reports[company_input.company_id] = report_content
@@ -522,12 +469,12 @@ def should_deepen_investigation(state: GraphState) -> str:
     return "continue"
 
 def should_investigate_next_candidate(state: GraphState) -> str:
-    """次のリスク候補の調査に移るか、その会社の分析を完了するかを判定する"""
-    log_and_print(state, "--- ノード実行: 次の[リスク候補]の調査判定 ---")
+    """次の調査観点の調査に移るか、その会社の分析を完了するかを判定する"""
+    log_and_print(state, "--- ノード実行: 次の[調査観点]の調査判定 ---")
     if state.current_candidate_index_micro < len(state.risk_candidates):
-        # log_and_print(state, f"判定: [{state.current_company_input.company_name}] の次のリスク候補の調査へ。")
+        # log_and_print(state, f"判定: [{state.current_company_input.company_name}] の次の調査観点の調査へ。")
         return "continue"
-    # log_and_print(state, f"判定: [{state.current_company_input.company_name}] の全リスク候補の調査が完了。")
+    # log_and_print(state, f"判定: [{state.current_company_input.company_name}] の全調査観点の調査が完了。")
     return "complete"
 
 def should_analyze_next_company(state: GraphState) -> str:
@@ -568,7 +515,7 @@ graph_builder.add_edge("load_initial_data", "setup_company_analysis")
 graph_builder.add_edge("setup_company_analysis", "generate_candidates")
 graph_builder.add_edge("generate_candidates", "micro_loop_router")
 
-# ミクロループ（リスク候補ごとの調査）
+# ミクロループ（調査観点ごとの調査）
 graph_builder.add_conditional_edges(
     "micro_loop_router",
     should_investigate_next_candidate,
@@ -590,7 +537,7 @@ graph_builder.add_conditional_edges(
         "complete": "finalize_assessment"
     }
 )
-# 評価完了後は、次のリスクを判断するルーターに戻る
+# 評価完了後は、次の調査観点を判断するルーターに戻る
 graph_builder.add_edge("finalize_assessment", "micro_loop_router")
 
 # レポート生成が終わったら、次の会社の準備に移る
