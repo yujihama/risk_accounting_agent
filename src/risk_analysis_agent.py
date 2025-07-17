@@ -55,6 +55,7 @@ class GraphState(BaseModel):
     common_qualitative_docs: List[Document] # 全社共通の定性情報
     current_company_index: int = 0
     final_assessments: List[FinalAssessment] = []
+    reanalyze: bool = False
     
     # --- 個別会社分析（ミクロレベル）の状態 ---
     current_company_input: Optional[CompanyInput] = None
@@ -70,8 +71,10 @@ class GraphState(BaseModel):
     max_depth: int = 2
     last_assessment: Optional[RiskAssessment] = None
     company_reports: Dict[str, str] = {}
+    target_company_reports: str = ""
     # ユーザーが指定したPDF格納フォルダのパス（任意）。
     docs_folder_path: Optional[str] = None
+    additional_doc_folder_path: Optional[str] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -90,21 +93,48 @@ PROMPT_TEMPLATE_INITIAL_SUMMARY = """
 ## 検出された異常指標
 {abnormal_indicators}
 """
+PROMPT_TEMPLATE_INITIAL_SUMMARY_REANALYZE = """
+あなたはシニア財務アナリストです。
+以下は子会社の分析結果です。記載されているリスク候補を3つ程度に集約して、それぞれについて具体的にどのような調査をすべきかを記載してください。
+各リスク候補に記載されている提供依頼すべき情報は既に取得済みという前提で記載してください。
+この結果は後続の調査作業のインプットとなります。
+
+## 子会社の分析結果
+{analysis_results}
+
+"""
 
 PROMPT_TEMPLATE_CANDIDATE_GENERATOR = """
 あなたは優秀な財務アナリストです。
-以下の異常な指標の推移と背景の仮説から、この仮説を検証するための調査観点を3～5つ程度挙げてください。
+以下の異常な指標の推移と背景の仮説から、この仮説を検証するための調査観点を3つ程度挙げてください。
 
 ## 異常な指標の推移
 {abnormal_indicators}
 
 ## 推測される背景
 {background}
+
+## FEW-SHOT
+1. **収益認識の歪み**
+   - 子会社利益率15% vs 業界平均5-7%の乖離
+2. **実態不透明な取引先**
+   - 主要販売先「A-Tech社」が業界レポートに未掲載
+3. **資金調達の健全性**
+   - 有利子負債比率改善と利息率上昇の矛盾
+"""
+
+PROMPT_TEMPLATE_CANDIDATE_GENERATOR_REANALYZE = """
+あなたは優秀な財務アナリストです。
+以下の子会社の分析結果から、このリスク候補を評価するための調査観点を3つ程度挙げてください。
+
+## 子会社の分析結果
+{analysis_results}
+
 """
 
 PROMPT_TEMPLATE_QUERY_DECOMPOSER = """
 あなたは熟練した財務分析の専門家です。
-以下の調査観点の文章を分析し、その内容を検証するためにRAG検索で使うためのキーフレーズを3つ程度抽出してください。
+以下の調査観点の文章を分析し、その内容を検証するためにRAG検索で使うためのキーフレーズを2つ程度抽出してください。
 各キーフレーズはそれぞれ単独で意味として独立するようにください。
 生成されたキーフレーズはベクトル化され類似度が高いチャンクが取得されます。有効に取得できるよう、キーフレーズは省略せずに具体的に生成してください。
 
@@ -132,10 +162,9 @@ PROMPT_TEMPLATE_EVALUATOR_DEEP_DIVE = """
 """
 
 PROMPT_TEMPLATE_COMPANY_REPORT = """
-あなたは経理財務分析の専門家です。
-以下は子会社について調査した結果です。
-検知された指標推移の背景や因果関係を分析しレポートを作成してください。
-レポートは、指標推移の概況、調査の結果判明した指標推移の背景や因果関係で構成されるようにしてください。
+あなたは経理財務分析の専門家です。以下は子会社について調査した結果です。
+検知された指標推移の背景や因果関係を推察し、追加で子会社へ提供依頼すべき情報を整理したレポートを作成してください。
+レポートは、指標推移の概況、調査の結果推察される指標推移の背景や因果関係、リスクの有無を裏付けるために子会社へ提供依頼すべき情報で構成されるようにしてください。
 また情報ソースは注釈を付ける形で記載してください。
 
 ## 分析対象企業
@@ -144,16 +173,40 @@ PROMPT_TEMPLATE_COMPANY_REPORT = """
 ## 検知された指標推移
 {abnormal_indicators}
 
-## 指標推移の背景、ストーリーの調査結果
+## 推察される指標推移の背景、ストーリー
 {assessments_summary}
 
+# 回答フォーマット
+- 指標推移の概況
+- 調査の結果推察される指標推移の背景や因果関係
+- 推察されるリスク候補
+  - リスク候補の説明
+  - リスクの有無を裏付けるために子会社へ提供依頼すべき情報(資料依頼、関係者ヒアリングなど)
+"""
+PROMPT_TEMPLATE_COMPANY_REPORT_REANALYZE = """
+あなたは経理財務分析の専門家です。
+以下は子会社のいくつかのリスク候補の調査をするために子会社からデータを受領した後の分析結果です。
+指標推移の概況と各リスク候補のリスクレベルを判定したレポートをmarkdown形式で作成してください。
+また情報ソースは注釈を付ける形で記載してください。
+
+## 分析対象企業
+{company_name} ({company_id})
+
+## 検知された指標推移
+{abnormal_indicators}
+
+## 推察される指標推移の背景、ストーリー
+{assessments_summary}
+
+# 回答フォーマット
+- 指標推移の概況
+- 調査の結果推察される指標推移の背景や因果関係
+- 推察されるリスク候補
+  - リスクレベル（high・middle・low）
+  - 判定根拠（詳細に記載すること。むやみにhighにせず真に内部統制に問題がある場合のみhighとすること。）
 """
 
 # --- 3. ノードの実装 ---
-
-if "OPENAI_API_KEY" not in os.environ:
-    os.environ["OPENAI_API_KEY"] = "YOUR_API_KEY_HERE"
-
 llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 # eval_llm = ChatOpenAI(model="o3-mini", temperature=1)
 eval_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
@@ -193,6 +246,7 @@ def load_initial_data_node(state: GraphState) -> Dict[str, Any]:
     """全社共通の定性情報をロードするノード"""
     log_and_print(state, "--- ノード実行: ドキュメントのロード ---")
     
+    reanalyze = state.reanalyze
     common_docs = []
     if state.docs_folder_path and os.path.isdir(state.docs_folder_path):
         pdf_files = [
@@ -200,6 +254,12 @@ def load_initial_data_node(state: GraphState) -> Dict[str, Any]:
             for f in os.listdir(state.docs_folder_path)
             if f.lower().endswith(".pdf")
         ]
+        if reanalyze:
+            pdf_files.extend([
+                os.path.join(state.additional_doc_folder_path, f)
+                for f in os.listdir(state.additional_doc_folder_path)
+                if f.lower().endswith(".pdf") and f not in pdf_files
+            ])
 
         log_and_print(state, f"指定フォルダから {len(pdf_files)} 件のPDFを検出")
 
@@ -270,20 +330,29 @@ def setup_company_analysis_node(state: GraphState) -> Dict[str, Any]:
     vector_store_qualitative = FAISS.from_documents(state.common_qualitative_docs, embeddings)
     vector_store_quantitative = FAISS.from_documents(quantitative_docs, embeddings)
 
-    retriever_qualitative = vector_store_qualitative.as_retriever(search_kwargs={"k": 2})
-    retriever_quantitative = vector_store_quantitative.as_retriever(search_kwargs={"k": 5})
+    retriever_qualitative = vector_store_qualitative.as_retriever(search_kwargs={"k": 5})
+    retriever_quantitative = vector_store_quantitative.as_retriever(search_kwargs={"k": 10})
 
     log_message = f"[{company_input.company_name}] のハイブリッドRAGストアを構築しました ({len(hybrid_docs)}件)。"
     log_and_print(state, log_message)
 
     # 分析サマリーを生成
-    summary_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_INITIAL_SUMMARY)
-    summary_chain = summary_prompt | eval_llm
-    analysis_summary = summary_chain.invoke({
-        "company_name": company_input.company_name,
-        "summary": company_input.summary,
-        "abnormal_indicators": json.dumps(company_input.abnormal_indicators, ensure_ascii=False)
-    }).content
+    reanalyze = state.reanalyze
+    if reanalyze:
+        summary_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_INITIAL_SUMMARY_REANALYZE)
+        summary_chain = summary_prompt | eval_llm
+        analysis_summary = summary_chain.invoke({
+            "analysis_results": state.target_company_reports
+        }).content
+    
+    else:
+        summary_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_INITIAL_SUMMARY)
+        summary_chain = summary_prompt | eval_llm
+        analysis_summary = summary_chain.invoke({
+            "company_name": company_input.company_name,
+            "summary": company_input.summary,
+            "abnormal_indicators": json.dumps(company_input.abnormal_indicators, ensure_ascii=False)
+        }).content
     
     log_and_print(state, f"[thought] {analysis_summary}")
 
@@ -298,11 +367,18 @@ def setup_company_analysis_node(state: GraphState) -> Dict[str, Any]:
 def generate_candidates_node(state: GraphState) -> Dict[str, Any]:
     """分析サマリーから調査観点を生成"""
     log_and_print(state, "--- ノード実行: 調査観点の生成 ---")
+    reanalyze = state.reanalyze
     structured_llm_cand = llm.with_structured_output(RiskCandidates)
-    prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_CANDIDATE_GENERATOR)
-    chain = prompt | structured_llm_cand
+    if reanalyze:
+        prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_CANDIDATE_GENERATOR_REANALYZE)
+        chain = prompt | structured_llm_cand
+        response = chain.invoke({"analysis_results": state.current_analysis_summary})
+    else:
+        prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_CANDIDATE_GENERATOR)
+        chain = prompt | structured_llm_cand
+        response = chain.invoke({"abnormal_indicators": json.dumps(state.current_company_input.abnormal_indicators, ensure_ascii=False), "background": state.current_analysis_summary})
+
     # Change 'summary' to 'metrics_summary' to match the prompt template
-    response = chain.invoke({"abnormal_indicators": json.dumps(state.current_company_input.abnormal_indicators, ensure_ascii=False), "background": state.current_analysis_summary})
     log_and_print(state, "調査観点を生成しました。")
     for cand in response.candidates:
         cand.source_metric = state.current_analysis_summary
@@ -433,7 +509,11 @@ def generate_company_report_node(state: GraphState) -> Dict[str, Any]:
         assessments_summary_text += f"根拠資料: {assessment.evidence_docs}\n"
 
     # レポート生成の実行
-    report_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_COMPANY_REPORT)
+    reanalyze = state.reanalyze
+    if reanalyze:
+        report_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_COMPANY_REPORT_REANALYZE)
+    else:
+        report_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE_COMPANY_REPORT)
     report_chain = report_prompt | eval_llm
     
     report_content = report_chain.invoke({
@@ -556,29 +636,29 @@ graph_builder.add_conditional_edges(
 # グラフをコンパイル
 app = graph_builder.compile()
 
-# --- 6. 実行 ---
-if __name__ == "__main__":
-    # サンプル入力データ
-    initial_input_data = {
-        "all_companies_input": [
-            CompanyInput(
-                company_id="A001",
-                company_name="子会社A",
-                summary="主力事業は電子部品（製品X）の製造・販売。特にコンシューマー向け製品に強み。",
-                key_metrics={"売上高": "100億円", "営業利益": "5億円"},
-                abnormal_indicators={"在庫回転期間": "前年比50%悪化", "返品率": "3倍に増加"}
-            ),
-            CompanyInput(
-                company_id="B002",
-                company_name="子会社B",
-                summary="産業用ソフトウェア（製品Y）の開発・販売。安定した顧客基盤を持つが、近年成長が鈍化。",
-                key_metrics={"売上高": "50億円", "営業利益": "10億円"},
-                abnormal_indicators={"新規契約数": "前年比20%減", "解約率": "5%上昇"}
-            )
-        ],
-        # common_qualitative_docs フィールドを初期状態で追加する
-        "common_qualitative_docs": []
-    }
+# # --- 6. 実行 ---
+# if __name__ == "__main__":
+#     # サンプル入力データ
+#     initial_input_data = {
+#         "all_companies_input": [
+#             CompanyInput(
+#                 company_id="A001",
+#                 company_name="子会社A",
+#                 summary="主力事業は電子部品（製品X）の製造・販売。特にコンシューマー向け製品に強み。",
+#                 key_metrics={"売上高": "100億円", "営業利益": "5億円"},
+#                 abnormal_indicators={"在庫回転期間": "前年比50%悪化", "返品率": "3倍に増加"}
+#             ),
+#             CompanyInput(
+#                 company_id="B002",
+#                 company_name="子会社B",
+#                 summary="産業用ソフトウェア（製品Y）の開発・販売。安定した顧客基盤を持つが、近年成長が鈍化。",
+#                 key_metrics={"売上高": "50億円", "営業利益": "10億円"},
+#                 abnormal_indicators={"新規契約数": "前年比20%減", "解約率": "5%上昇"}
+#             )
+#         ],
+#         # common_qualitative_docs フィールドを初期状態で追加する
+#         "common_qualitative_docs": []
+#     }
     
-    final_state = app.invoke(initial_input_data,config={"recursion_limit": 100})
+#     final_state = app.invoke(initial_input_data,config={"recursion_limit": 100})
 

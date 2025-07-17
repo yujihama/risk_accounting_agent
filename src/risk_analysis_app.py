@@ -8,7 +8,7 @@ from datetime import datetime
 import PyPDF2
 import io
 
-from results_display import show_results_page
+from results_display import show_results_page, show_mail_page
 
 # ページ設定
 st.set_page_config(
@@ -85,11 +85,12 @@ def initialize_session_state():
         'analysis_status': 'idle',
         'analysis_logs': [],
         'current_node': None,
-        'analysis_results': None,
+        'analysis_results': [],
         'openai_api_key': '',
         'analysis_thread': None,
         'error_message': None,
-        'doc_folder_path': os.path.join(os.getcwd(), 'data', 'docs') if os.path.isdir(os.path.join(os.getcwd(), 'data', 'docs')) else ''
+        'doc_folder_path': os.path.join(os.getcwd(), 'data', 'docs') if os.path.isdir(os.path.join(os.getcwd(), 'data', 'docs')) else '',
+        'additional_doc_folder_path': os.path.join(os.getcwd(), 'data', 'additional_data') if os.path.isdir(os.path.join(os.getcwd(), 'data', 'additional_data')) else ''
     }
     
     for key, default_value in default_states.items():
@@ -110,7 +111,7 @@ def main():
         st.subheader("ページ選択")
         page = st.selectbox(
             label="表示ページを選択",
-            options=["データ設定", "調査", "結果表示"],
+            options=["データ設定", "調査", "結果表示", "メール作成"],
             index=0
         )
 
@@ -132,7 +133,7 @@ def main():
             st.warning("APIキーを入力してください")
         
         st.divider()
-        
+
     # 選択されたページを表示
     if page == "データ設定":
         show_data_setup_page()
@@ -140,6 +141,8 @@ def main():
         show_analysis_page()
     elif page == "結果表示":
         show_results_page()
+    elif page == "メール作成":
+        show_mail_page()
 
 def show_data_setup_page():
     """データ設定ページ"""
@@ -221,19 +224,11 @@ def show_data_setup_page():
             st.session_state.company_data = []
             st.rerun()
     
-    # クイックスタート
     st.divider()
-    # st.subheader("クイックスタート")
-    # st.write("サンプルデータを使用して、すぐに分析を開始できます。")
     
-    # col1, col2 = st.columns(2)
-    # with col1:
-    #     if st.button("サンプルドキュメントを読み込み"):
-    #         load_sample_documents()
-    
-    # with col2:
     if st.button("子会社指標データ取り込み"):
         load_sample_company_data()
+
 
 def process_pdf_files(uploaded_files):
     """PDFファイルを処理"""
@@ -242,10 +237,6 @@ def process_pdf_files(uploaded_files):
     processed_docs = []
     
     for uploaded_file in uploaded_files:
-        # if uploaded_file.size > max_size_bytes:
-        #     st.error(f"ファイル {uploaded_file.name} がサイズ制限を超えています。")
-        #     continue
-        
         try:
             # PDFからテキストを抽出
             pdf_reader = PyPDF2.PdfReader(uploaded_file)
@@ -339,58 +330,64 @@ def show_csv_upload():
         except Exception as e:
             st.error(f"CSVファイル読み込みエラー: {str(e)}")
 
-def load_sample_documents():
-    """サンプルドキュメントを読み込み"""
-    sample_docs = [
-        {
-            'filename': 'sample_meeting_minutes.pdf',
-            'content': '''会議議事録
-日時: 2024年6月15日
-議題: 四半期業績レビュー
+# def load_sample_documents():
+#     """サンプルドキュメントを読み込み"""
+#     sample_docs = [
+#         {
+#             'filename': 'sample_meeting_minutes.pdf',
+#             'content': '''会議議事録
+# 日時: 2024年6月15日
+# 議題: 四半期業績レビュー
 
-主な議論点:
-1. 売上高が前年同期比で5%減少
-2. 新規顧客獲得が計画を下回る
-3. システム障害による機会損失
-4. 競合他社の価格攻勢への対応
+# 主な議論点:
+# 1. 売上高が前年同期比で5%減少
+# 2. 新規顧客獲得が計画を下回る
+# 3. システム障害による機会損失
+# 4. 競合他社の価格攻勢への対応
 
-決定事項:
-- マーケティング戦略の見直し
-- システム安定性の向上
-- 価格競争力の強化''',
-            'pages': 3,
-            'processed_at': datetime.now().isoformat()
-        },
-        {
-            'filename': 'sample_financial_report.pdf',
-            'content': '''財務レポート
-期間: 2024年第1四半期
+# 決定事項:
+# - マーケティング戦略の見直し
+# - システム安定性の向上
+# - 価格競争力の強化''',
+#             'pages': 3,
+#             'processed_at': datetime.now().isoformat()
+#         },
+#         {
+#             'filename': 'sample_financial_report.pdf',
+#             'content': '''財務レポート
+# 期間: 2024年第1四半期
 
-業績サマリー:
-- 売上高: 95億円（前年同期比-5%）
-- 営業利益: 8億円（前年同期比-15%）
-- 純利益: 5億円（前年同期比-20%）
+# 業績サマリー:
+# - 売上高: 95億円（前年同期比-5%）
+# - 営業利益: 8億円（前年同期比-15%）
+# - 純利益: 5億円（前年同期比-20%）
 
-リスク要因:
-- 主要顧客の契約更新不確実性
-- 原材料費の高騰
-- 為替変動リスク
-- 人材確保の困難''',
-            'pages': 5,
-            'processed_at': datetime.now().isoformat()
-        }
-    ]
+# リスク要因:
+# - 主要顧客の契約更新不確実性
+# - 原材料費の高騰
+# - 為替変動リスク
+# - 人材確保の困難''',
+#             'pages': 5,
+#             'processed_at': datetime.now().isoformat()
+#         }
+#     ]
     
-    st.session_state.common_docs.extend(sample_docs)
-    st.success("サンプルドキュメントを読み込みました。")
-    st.rerun()
+#     st.session_state.common_docs.extend(sample_docs)
+#     st.success("サンプルドキュメントを読み込みました。")
+#     st.rerun()
 
 def load_sample_company_data():
     """サンプル企業データを読み込み"""
     sample_companies = [
         {
             "company_name": "c1012株式会社",
-            "additional_info": "産業機械部品の製造業。主力製品は精密加工部品「製品A」で、自動車・電機メーカー向けに供給。埼玉県川口市に工場を構え、東京都港区に本社・研修施設を保有。研究開発部門では新技術開発を手がけるが、近年は競合他社の技術革新に遅れを取り、価格競争力が低下。従業員数約200名の中堅企業として長年事業を展開してきた。",
+            "additional_info": """
+            会社名: 株式会社c1012
+            設立: 2015年4月1日
+            資本金: 5,000万円
+            従業員数: 45名
+            事業内容: 精密機械部品の製造・販売
+            """,
             "abnormal_indicators": [{
                 "検知された指標値推移": "売上債権回転期間の上昇傾向に対して営業キャッシュフローが減少傾向にある",
                 "売上債権回転期間": {
@@ -479,28 +476,28 @@ def show_analysis_page():
     if missing_company_data:
         st.error("分析を実行するには、企業データを入力してください。")
 
-    # ボタンの非活性条件:
-    # 1) 現在実行中または完了している場合
-    # 2) APIキー / 企業データが不足している場合
-    button_disabled = (
-        st.session_state.analysis_status != 'idle' or
-        missing_api_key or
-        missing_company_data
-    )
+    # 分析結果をもとに再分析
+    button_reanalyze = "analysis_results" in st.session_state and len(st.session_state.analysis_results) > 0
 
     # 分析開始ボタン
-    if st.button("分析開始", type="primary", use_container_width=True, disabled=button_disabled):
-        # ダブルクリック等を防ぐため、idle 状態の時のみ開始
-        if st.session_state.analysis_status == 'idle':
-            start_analysis()
+    if button_reanalyze:
+        company_id = st.selectbox("分析する子会社を選択", options=st.session_state.analysis_results[-1]["company_reports"].keys())
+        if st.button("子会社からの提供資料をもとに分析", type="primary", use_container_width=True):
+            start_analysis(reanalyze=True, company_id=company_id)
+    else:
+        if st.button("分析開始", type="primary", use_container_width=True):
+            # ダブルクリック等を防ぐため、idle 状態の時のみ開始
+            if st.session_state.analysis_status == 'idle':
+                start_analysis()
 
     # 分析をリセット
     if st.button("分析をリセット"):
+        st.session_state.analysis_results = []
         st.session_state.analysis_status = 'idle'
         st.session_state.current_node = None
         st.rerun()
 
-def start_analysis():
+def start_analysis(reanalyze=False, company_id=None):
     """分析を開始"""
     try:
         # セッション状態を安全に初期化
@@ -508,7 +505,7 @@ def start_analysis():
         st.session_state.current_node = "初期化中"
         
         # 実際のリスク分析エージェントを実行
-        run_real_analysis()
+        run_real_analysis(reanalyze, company_id)
         
     except Exception as e:
         st.session_state.analysis_status = 'error'
@@ -516,7 +513,7 @@ def start_analysis():
         st.session_state.analysis_logs.append(f"エラーが発生しました: {str(e)}")
         st.error(f"分析開始中にエラーが発生しました: {str(e)}")
     
-def run_real_analysis():
+def run_real_analysis(reanalyze=False, company_id=None):
     """実際のリスク分析エージェントを実行"""
     try:
         # 環境変数にAPIキーを設定
@@ -530,36 +527,51 @@ def run_real_analysis():
         from langchain_core.documents import Document
         
         docs_folder_path = st.session_state.get('doc_folder_path')
+        additional_doc_folder_path = os.path.join(os.getcwd(), 'data', 'additional_data')
         if not docs_folder_path:
             raise ValueError("共通ドキュメントフォルダが設定されていません")
         
         # 企業データを CompanyInput に変換
+        # company_idが指定されている場合は、その子会社のみを分析対象とする
         companies_input = []
-        for i, company_data in enumerate(st.session_state.company_data):
-            try:
-                company_input = CompanyInput(
-                    company_id=f"company_{i+1}",
-                    company_name=company_data.get('company_name', f'企業{i+1}'),
-                    summary=company_data.get('additional_info', company_data.get('business_description', '')),
-                    key_metrics={},
-                    #     "売上高": str(company_data.get('revenue', '不明')) + "億円" if company_data.get('revenue') else "不明",
-                    #     "従業員数": str(company_data.get('employees', '不明')),
-                    #     "設立年": str(company_data.get('founded_year', '不明')),
-                    #     "業界": str(company_data.get('industry', '不明')),
-                    #     "所在地": str(company_data.get('location', '不明'))
-                    # },
-                    # # abnormal_indicators は辞書を想定しているが、リストで渡されるケースがある。
-                    # # リストの場合はインデックス付きのキーを付与して辞書化する。
-                    abnormal_indicators=(
-                        {f"indicator_{idx+1}": item for idx, item in enumerate(company_data.get('abnormal_indicators', []))}
-                        if isinstance(company_data.get('abnormal_indicators', []), list)
-                        else company_data.get('abnormal_indicators', {})
+        if company_id is None:
+            for i, company_data in enumerate(st.session_state.company_data):
+                try:
+                    company_input = CompanyInput(
+                        company_id=f"company_{i+1}",
+                        company_name=company_data.get('company_name', f'企業{i+1}'),
+                        summary=company_data.get('additional_info', company_data.get('business_description', '')),
+                        key_metrics={},
+                        abnormal_indicators=(
+                            {f"indicator_{idx+1}": item for idx, item in enumerate(company_data.get('abnormal_indicators', []))}
+                            if isinstance(company_data.get('abnormal_indicators', []), list)
+                            else company_data.get('abnormal_indicators', {})
+                        )
                     )
-                )
-                companies_input.append(company_input)
-            except Exception as e:
-                st.session_state.analysis_logs.append(f"企業データ変換エラー (企業{i+1}): {str(e)}")
-                continue
+                    companies_input.append(company_input)
+                except Exception as e:
+                    st.session_state.analysis_logs.append(f"企業データ変換エラー (企業{i+1}): {str(e)}")
+                    continue
+        else:
+            for i, company_data in enumerate(st.session_state.company_data):
+                try:
+                    if f"company_{i+1}" == company_id:
+                        company_input = CompanyInput(
+                            company_id=f"company_{i+1}",
+                            company_name=company_data.get('company_name', f'企業{i+1}'),
+                            summary=company_data.get('additional_info', company_data.get('business_description', '')),
+                            key_metrics={},
+                            abnormal_indicators=(
+                                {f"indicator_{idx+1}": item for idx, item in enumerate(company_data.get('abnormal_indicators', []))}
+                                if isinstance(company_data.get('abnormal_indicators', []), list)
+                                else company_data.get('abnormal_indicators', {})
+                            )
+                        )
+                        companies_input.append(company_input)
+                        break
+                except Exception as e:
+                    st.session_state.analysis_logs.append(f"企業データ変換エラー (企業{i+1}): {str(e)}")
+                    continue
 
         if not companies_input:
             raise ValueError("有効な企業データが見つかりません")
@@ -572,15 +584,22 @@ def run_real_analysis():
             "all_companies_input": companies_input,
             "common_qualitative_docs": [],
             "docs_folder_path": docs_folder_path,
-            "max_depth": 5
+            "additional_doc_folder_path": additional_doc_folder_path,
+            "max_depth": 5,
+            "reanalyze": reanalyze,
+            "company_id": company_id,
+            "target_company_reports": st.session_state.analysis_results[-1]["company_reports"].get(company_id, "") if reanalyze else ""
         }
-        
+
         with st.spinner("リスク分析エージェントを実行しています..."):
             # 実際の分析を実行
             final_state = app.invoke(initial_input_data, config={"recursion_limit": 100})
         
         # 結果を保存
-        st.session_state.analysis_results = final_state
+        if reanalyze == False:
+            st.session_state.analysis_results = [final_state]
+        else:
+            st.session_state.analysis_results.append(final_state)
 
         # エージェントが保持する詳細ログを UI 用ログに統合
         if hasattr(final_state, "log") and isinstance(final_state.log, list):
